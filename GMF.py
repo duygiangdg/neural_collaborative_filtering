@@ -7,13 +7,12 @@ He Xiangnan et al. Neural Collaborative Filtering. In WWW 2017.
 @author: Xiangnan He (xiangnanhe@gmail.com)
 '''
 import numpy as np
-import theano.tensor as T
 import keras
 from keras import backend as K
-from keras import initializations
+from keras import initializers
 from keras.models import Sequential, Model, load_model, save_model
 from keras.layers.core import Dense, Lambda, Activation
-from keras.layers import Embedding, Input, Dense, merge, Reshape, Merge, Flatten
+from keras.layers import Embedding, Input, Dense, Multiply, Reshape, Flatten
 from keras.optimizers import Adagrad, Adam, SGD, RMSprop
 from keras.regularizers import l2
 from Dataset import Dataset
@@ -52,24 +51,34 @@ def parse_args():
     return parser.parse_args()
 
 def init_normal(shape, name=None):
-    return initializations.normal(shape, scale=0.01, name=name)
+    return initializers.normal(shape, scale=0.01, name=name)
 
 def get_model(num_users, num_items, latent_dim, regs=[0,0]):
     # Input variables
     user_input = Input(shape=(1,), dtype='int32', name = 'user_input')
     item_input = Input(shape=(1,), dtype='int32', name = 'item_input')
 
-    MF_Embedding_User = Embedding(input_dim = num_users, output_dim = latent_dim, name = 'user_embedding',
-                                  init = init_normal, W_regularizer = l2(regs[0]), input_length=1)
-    MF_Embedding_Item = Embedding(input_dim = num_items, output_dim = latent_dim, name = 'item_embedding',
-                                  init = init_normal, W_regularizer = l2(regs[1]), input_length=1)   
+    MF_Embedding_User = Embedding(
+        input_dim=num_users,
+        output_dim=latent_dim,
+        name='user_embedding',
+        embeddings_initializer='normal',
+        embeddings_regularizer=l2(regs[0]),
+        input_length=1)
+    MF_Embedding_Item = Embedding(
+        input_dim=num_items,
+        output_dim=latent_dim,
+        name='item_embedding',
+        embeddings_initializer='normal',
+        embeddings_regularizer=l2(regs[1]),
+        input_length=1)
     
     # Crucial to flatten an embedding vector!
     user_latent = Flatten()(MF_Embedding_User(user_input))
     item_latent = Flatten()(MF_Embedding_Item(item_input))
     
     # Element-wise product of user and item embeddings 
-    predict_vector = merge([user_latent, item_latent], mode = 'mul')
+    predict_vector = Multiply()([user_latent, item_latent])
     
     # Final prediction layer
     #prediction = Lambda(lambda x: K.sigmoid(K.sum(x)), output_shape=(1,))(predict_vector)
@@ -89,9 +98,9 @@ def get_train_instances(train, num_negatives):
         item_input.append(i)
         labels.append(1)
         # negative instances
-        for t in xrange(num_negatives):
+        for t in range(num_negatives):
             j = np.random.randint(num_items)
-            while train.has_key((u, j)):
+            while (u, j) in train.keys():
                 j = np.random.randint(num_items)
             user_input.append(u)
             item_input.append(j)
@@ -121,7 +130,7 @@ if __name__ == '__main__':
     num_users, num_items = train.shape
     print("Load data done [%.1f s]. #user=%d, #item=%d, #train=%d, #test=%d" 
           %(time()-t1, num_users, num_items, train.nnz, len(testRatings)))
-    
+
     # Build model
     model = get_model(num_users, num_items, num_factors, regs)
     if learner.lower() == "adagrad": 
@@ -132,8 +141,8 @@ if __name__ == '__main__':
         model.compile(optimizer=Adam(lr=learning_rate), loss='binary_crossentropy')
     else:
         model.compile(optimizer=SGD(lr=learning_rate), loss='binary_crossentropy')
-    #print(model.summary())
-    
+    print(model.summary())
+
     # Init performance
     t1 = time()
     (hits, ndcgs) = evaluate_model(model, testRatings, testNegatives, topK, evaluation_threads)
@@ -144,17 +153,16 @@ if __name__ == '__main__':
     
     # Train model
     best_hr, best_ndcg, best_iter = hr, ndcg, -1
-    for epoch in xrange(epochs):
+    for epoch in range(epochs):
         t1 = time()
         # Generate training instances
         user_input, item_input, labels = get_train_instances(train, num_negatives)
-        
+
         # Training
-        hist = model.fit([np.array(user_input), np.array(item_input)], #input
-                         np.array(labels), # labels 
-                         batch_size=batch_size, nb_epoch=1, verbose=0, shuffle=True)
+        hist = model.fit([np.array(user_input), np.array(item_input)],
+                         np.array(labels),batch_size=batch_size, epochs=1, verbose=1, shuffle=True)
         t2 = time()
-        
+
         # Evaluation
         if epoch %verbose == 0:
             (hits, ndcgs) = evaluate_model(model, testRatings, testNegatives, topK, evaluation_threads)
@@ -164,6 +172,7 @@ if __name__ == '__main__':
             if hr > best_hr:
                 best_hr, best_ndcg, best_iter = hr, ndcg, epoch
                 if args.out > 0:
+                    print("saving weight")
                     model.save_weights(model_out_file, overwrite=True)
 
     print("End. Best Iteration %d:  HR = %.4f, NDCG = %.4f. " %(best_iter, best_hr, best_ndcg))
